@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>配置授权</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.2.3/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+<nav class="navbar navbar-dark bg-dark">
+  <div class="container-fluid"><a class="navbar-brand" href="/">DNS 统一管理面板</a>
+    <div><a href="/" class="btn btn-outline-light btn-sm">返回主页</a></div>
+  </div>
+</nav>
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-lg-8">
+            <div id="alert-placeholder"></div>
+            <div class="card shadow-sm">
+                <div class="card-header"><h5 class="mb-0">云平台授权配置</h5></div>
+                <div class="card-body">
+                    <form id="settings-form">
+                        <fieldset class="mb-4 p-3 border rounded">
+                            <legend class="w-auto float-none fs-6 px-2">阿里云</legend>
+                            <div class="mb-3"><label class="form-label">AccessKey ID</label><input type="text" class="form-control" id="ALI_KEY" name="ALI_KEY"></div>
+                            <div class="mb-3"><label class="form-label">AccessKey Secret</label><input type="password" class="form-control" id="ALI_SECRET" name="ALI_SECRET"></div>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="testCreds('aliyun')">测试连接</button><span id="aliyun_test_result" class="ms-2"></span>
+                        </fieldset>
+                        <fieldset class="mb-4 p-3 border rounded">
+                            <legend class="w-auto float-none fs-6 px-2">腾讯云</legend>
+                            <div class="mb-3"><label class="form-label">SecretId</label><input type="text" class="form-control" id="TX_ID" name="TX_ID"></div>
+                            <div class="mb-3"><label class="form-label">SecretKey</label><input type="password" class="form-control" id="TX_KEY" name="TX_KEY"></div>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="testCreds('tencent')">测试连接</button><span id="tencent_test_result" class="ms-2"></span>
+                        </fieldset>
+                        <fieldset class="mb-4 p-3 border rounded">
+                            <legend class="w-auto float-none fs-6 px-2">Cloudflare</legend>
+                            <div class="mb-3">
+                                <label class="form-label">API Token</label>
+                                <input type="password" class="form-control" id="CF_API_TOKEN" name="CF_API_TOKEN">
+                                <div class="form-text">请使用 "编辑区域 DNS" 权限的 API Token。</div>
+                            </div>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="testCreds('cloudflare')">测试连接</button><span id="cloudflare_test_result" class="ms-2"></span>
+                        </fieldset>
+                        <button type="submit" class="btn btn-primary w-100">保存所有配置</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/jquery.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/bootstrap.bundle.min.js') }}"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        fetch('/api/settings').then(res => res.json()).then(settings => {
+            $('#ALI_KEY').val(settings.ALI_KEY || '');
+            $('#ALI_SECRET').val(settings.ALI_SECRET || '');
+            $('#TX_ID').val(settings.TX_ID || '');
+            $('#TX_KEY').val(settings.TX_KEY || '');
+            $('#CF_API_TOKEN').val(settings.CF_API_TOKEN || '');
+        });
+    });
+    
+    document.getElementById('settings-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const response = await fetch('/api/settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(Object.fromEntries(new FormData(e.target).entries()))
+        });
+        const result = await response.json();
+        showAlert(result.msg, 'success');
+    });
+
+    async function testCreds(provider) {
+        let payload = { provider };
+        const resultEl = document.getElementById(`${provider}_test_result`);
+        resultEl.textContent = '测试中...';
+        resultEl.className = 'ms-2';
+
+        if (provider === 'aliyun') {
+            payload.key = document.getElementById('ALI_KEY').value;
+            payload.secret = document.getElementById('ALI_SECRET').value;
+        } else if (provider === 'tencent') {
+            payload.id = document.getElementById('TX_ID').value;
+            payload.key = document.getElementById('TX_KEY').value;
+        } else if (provider === 'cloudflare') {
+            payload.token = document.getElementById('CF_API_TOKEN').value;
+        }
+        
+        const response = await fetch('/api/test_credentials', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        resultEl.textContent = result.msg;
+        resultEl.classList.add(response.ok ? 'text-success' : 'text-danger');
+    }
+
+    function showAlert(message, type) {
+        const placeholder = document.getElementById('alert-placeholder');
+        placeholder.innerHTML = `<div class="alert alert-${type} alert-dismissible" role="alert">${message}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>`;
+    }
+</script>
+</body>
+</html>

@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>混合云 DNS 管理</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.2.3/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.bootcdn.net/ajax/libs/datatables.net-bs5/1.13.1/dataTables.bootstrap5.min.css" rel="stylesheet">
+    <style>
+        .provider-aliyun { color: #ff6a00; font-weight: bold; }
+        .provider-tencent { color: #00a4ff; font-weight: bold; }
+        .provider-cloudflare { color: #f6821f; font-weight: bold; }
+        .record-table td { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .record-table td.actions { white-space: nowrap; width: 1%; }
+        .status-Proxied { color: orange; font-weight: bold; }
+        .status-DNS-Only { color: grey; }
+    </style>
+</head>
+<body class="bg-light">
+
+<nav class="navbar navbar-dark bg-dark">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/">DNS 统一管理面板</a>
+    <div>
+        <a href="/settings" class="btn btn-outline-warning btn-sm me-2">⚙️ 配置授权</a>
+        <button id="logoutBtn" class="btn btn-outline-light btn-sm">退出登录</button>
+    </div>
+  </div>
+</nav>
+
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-3 p-3 bg-white rounded shadow-sm">
+        <div id="filter-buttons" class="btn-group" role="group">
+            <button type="button" class="btn btn-outline-primary active" onclick="filterRecords('A')">A</button>
+            <button type="button" class="btn btn-outline-primary" onclick="filterRecords('CNAME')">CNAME</button>
+            <button type="button" class="btn btn-outline-primary" onclick="filterRecords('TXT')">TXT</button>
+            <button type="button" class="btn btn-outline-primary" onclick="filterRecords('MX')">MX</button>
+            <button type="button" class="btn btn-outline-primary" onclick="filterRecords('AAAA')">AAAA</button>
+            <button type="button" class="btn btn-outline-primary" onclick="filterRecords('ALL')">ALL</button>
+        </div>
+        <div class="d-flex align-items-center">
+            <div class="dropdown me-2">
+                <button class="btn btn-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                    显示列
+                </button>
+                <div class="dropdown-menu p-3" id="column-selector" style="width: 200px;">
+                    <button class="btn btn-primary btn-sm w-100 mt-2" id="save-columns-btn">保存偏好</button>
+                </div>
+            </div>
+            <button class="btn btn-success btn-sm me-2" id="btnAddRecord">+ 新增记录</button>
+            <button id="btnSync" class="btn btn-primary btn-sm"><span id="syncIcon">🔄</span> 刷新缓存</button>
+        </div>
+    </div>
+    <div class="accordion" id="domain-cards-container"></div>
+</div>
+
+<div class="modal fade" id="editModal">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title"></h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <form id="recordForm">
+                    <input type="hidden" name="record_id" id="f_record_id">
+                    <input type="hidden" name="action_type" id="f_action_type">
+                    <div class="mb-2"><label>云厂商</label>
+                        <select class="form-select" name="provider" id="f_provider" required>
+                            <option value="aliyun">阿里云</option>
+                            <option value="tencent">腾讯云</option>
+                            <option value="cloudflare">Cloudflare</option>
+                        </select>
+                    </div>
+                    <div class="row mb-2">
+                        <div class="col"><label>域名</label><input type="text" class="form-control" name="domain" id="f_domain" required></div>
+                        <div class="col"><label>主机记录 (RR)</label><input type="text" class="form-control" name="rr" id="f_rr" required></div>
+                    </div>
+                    <div class="row mb-2">
+                        <div class="col"><label>类型</label><select class="form-select" name="type" id="f_type"><option>A</option><option>CNAME</option><option>TXT</option><option>MX</option><option>AAAA</option></select></div>
+                        <div class="col"><label>TTL</label><input type="number" class="form-control" name="ttl" id="f_ttl" value="600" required></div>
+                    </div>
+                    <div class="mb-3"><label>记录值</label><textarea class="form-control" name="value" id="f_value" required rows="3"></textarea></div>
+                    <div class="mb-3 form-check form-switch d-none" id="proxied-switch-container">
+                        <input class="form-check-input" type="checkbox" role="switch" id="f_proxied" name="proxied" checked>
+                        <label class="form-check-label" for="f_proxied">开启代理 (Proxy)</label>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button><button type="button" class="btn btn-primary" id="saveBtn">保存</button></div>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/jquery.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/bootstrap.bundle.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/jquery.dataTables.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/dataTables.bootstrap5.min.js') }}"></script>
+
+<script>
+    let allRecords = [];
+    let currentFilter = 'A';
+    let visibleColumns = [];
+    const editModal = new bootstrap.Modal(document.getElementById('editModal'));
+    const ALL_COLUMNS = {
+        provider: { label: "厂商", render: (val) => `<span class="provider-${val} text-capitalize">${val}</span>` },
+        domain: { label: "域名" },
+        rr: { label: "主机记录" },
+        type: { label: "类型" },
+        value: { label: "记录值" },
+        ttl: { label: "TTL" },
+        status: { label: "状态", render: (val) => `<span class="status-${(val || '').replace(' ', '-')}">${val}</span>` },
+        created_at: { label: "创建时间", render: (val) => val ? new Date(val).toLocaleString() : 'N/A' }
+    };
+
+    function renderUI() {
+        const container = $('#domain-cards-container').empty();
+        const filteredRecords = (currentFilter === 'ALL') ? allRecords : allRecords.filter(r => r.type.toUpperCase() === currentFilter);
+        const recordsByDomain = filteredRecords.reduce((acc, record) => { (acc[record.domain] = acc[record.domain] || []).push(record); return acc; }, {});
+
+        if (Object.keys(recordsByDomain).length === 0) {
+            container.html('<div class="alert alert-info">没有找到符合条件的记录。</div>'); return;
+        }
+
+        const tableHeader = visibleColumns.map(key => `<th>${ALL_COLUMNS[key].label}</th>`).join('') + '<th>操作</th>';
+
+        Object.keys(recordsByDomain).sort().forEach((domain, index) => {
+            const records = recordsByDomain[domain];
+            const domainId = domain.replace(/\./g, '-');
+            const tableRows = records.map(row => {
+                const cells = visibleColumns.map(key => {
+                    const value = row[key];
+                    const renderedValue = ALL_COLUMNS[key].render ? ALL_COLUMNS[key].render(value) : (value || '');
+                    return `<td title="${value}">${renderedValue}</td>`;
+                }).join('');
+                return `<tr>${cells}<td class="actions"><button class="btn btn-sm btn-primary" onclick='openEdit(${JSON.stringify(row)})'>编辑</button> <button class="btn btn-sm btn-danger" onclick="delRecord('${row.provider}','${row.record_id}','${row.domain}')">删除</button></td></tr>`;
+            }).join('');
+            
+            const cardHtml = `
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="heading-${domainId}">
+                        <button class="accordion-button ${index === 0 ? '' : 'collapsed'}" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${domainId}">
+                            <strong>${domain}</strong>&nbsp;<span class="badge bg-secondary">${records.length} 条</span>
+                        </button>
+                    </h2>
+                    <div id="collapse-${domainId}" class="accordion-collapse collapse ${index === 0 ? 'show' : ''}" data-bs-parent="#domain-cards-container">
+                        <div class="accordion-body">
+                            <table class="table table-striped record-table" style="width:100%">
+                                <thead><tr>${tableHeader}</tr></thead>
+                                <tbody>${tableRows}</tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+            container.append(cardHtml);
+        });
+        $('.record-table').DataTable({ paging: false, info: false, searching: true, order: [], language: { search: "搜索:", zeroRecords: "无匹配数据" } });
+    }
+
+    function populateColumnSelector() {
+        const selector = $('#column-selector');
+        selector.find('.form-check').remove();
+        Object.entries(ALL_COLUMNS).forEach(([key, {label}]) => {
+            const isChecked = visibleColumns.includes(key);
+            const checkHtml = `<div class="form-check"><input class="form-check-input" type="checkbox" value="${key}" id="check-${key}" ${isChecked ? 'checked' : ''}><label class="form-check-label" for="check-${key}">${label}</label></div>`;
+            $(checkHtml).insertBefore('#save-columns-btn');
+        });
+    }
+    
+    $('#save-columns-btn').click(async () => {
+        const newVisibleColumns = Array.from($('#column-selector .form-check-input:checked')).map(el => $(el).val());
+        try {
+            await fetch('/api/preferences', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ columns: newVisibleColumns }) });
+            visibleColumns = newVisibleColumns;
+            renderUI();
+            alert('偏好已保存！');
+        } catch (e) { alert('保存失败！'); }
+    });
+    
+    async function initialLoad() {
+        try {
+            const [recordsRes, prefsRes] = await Promise.all([ fetch('/api/records'), fetch('/api/preferences') ]);
+            if (recordsRes.status === 401 || prefsRes.status === 401) { window.location.href = '/login'; return; }
+            const recordsData = await recordsRes.json();
+            const prefsData = await prefsRes.json();
+            allRecords = recordsData.data;
+            visibleColumns = prefsData.visible_columns;
+            populateColumnSelector();
+            filterRecords('A');
+        } catch (e) { $('#domain-cards-container').html('<div class="alert alert-danger">加载初始数据失败。</div>'); }
+    }
+
+    function filterRecords(type) {
+        currentFilter = type;
+        $('#filter-buttons .btn').removeClass('active').filter(function() { return $(this).text().trim() === type; }).addClass('active');
+        renderUI();
+    }
+
+    async function refreshDataAndUI() { 
+        const recordsRes = await fetch('/api/records');
+        const recordsData = await recordsRes.json();
+        allRecords = recordsData.data;
+        renderUI();
+    }
+    
+    $(document).ready(() => {
+        fetch('/api/session').catch(() => window.location.href = '/login');
+        initialLoad();
+        $('#logoutBtn').click(async () => { await fetch('/api/logout', { method: 'POST' }); window.location.href = '/login'; });
+        $('#btnSync').click(() => {
+            const btn = $('#btnSync'); btn.prop('disabled', true).find('#syncIcon').html('<span class="spinner-border spinner-border-sm"></span>');
+            fetch('/api/sync', { method: 'POST' }).then(res => res.json()).then(data => { alert(data.msg); if(data.status === 'success' || data.msg.includes("部分完成")) refreshDataAndUI(); }).catch(err => alert('同步失败')).finally(() => btn.prop('disabled', false).find('#syncIcon').text('🔄'));
+        });
+        $('#btnAddRecord').click(() => {
+            $('#recordForm')[0].reset();
+            $('#f_action_type').val('create');
+            $('#f_provider').prop('disabled', false).trigger('change');
+            $('#f_domain').prop('readonly', false);
+            $('.modal-title').text('新增解析记录');
+            editModal.show();
+        });
+        
+        $('#saveBtn').click(() => {
+            const action = $('#f_action_type').val();
+            const url = action === 'create' ? '/api/create' : '/api/update';
+            const form = $('#recordForm')[0];
+            const formData = new FormData(form);
+
+            if (action === 'update') {
+                formData.append('provider', $('#f_provider').val());
+            }
+
+            fetch(url, { method: 'POST', body: formData })
+                .then(async res => {
+                    if (res.ok) return res.json();
+                    const errorText = await res.text();
+                    throw new Error(`${res.status} ${res.statusText}: ${errorText}`);
+                })
+                .then(data => {
+                    if (data.status === 'success') {
+                        editModal.hide();
+                        refreshDataAndUI();
+                    } else {
+                        alert('操作失败: ' + data.msg);
+                    }
+                })
+                .catch(error => {
+                    console.error('Save error:', error);
+                    alert('操作失败: ' + error.message);
+                });
+        });
+        
+        $('#f_provider').on('change', function() {
+            if ($(this).val() === 'cloudflare') {
+                $('#proxied-switch-container').removeClass('d-none');
+            } else {
+                $('#proxied-switch-container').addClass('d-none');
+            }
+        });
+    });
+
+    function openEdit(row) {
+        const safeRow = Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === 'string' ? v.replace(/'/g, "&apos;").replace(/"/g, "&quot;") : v]));
+        $('#recordForm')[0].reset();
+        
+        $('#f_action_type').val('update');
+        $('#f_record_id').val(safeRow.record_id);
+        
+        $('#f_provider').val(safeRow.provider).prop('disabled', true).trigger('change');
+        $('#f_domain').val(safeRow.domain).prop('readonly', true);
+        
+        $('#f_rr').val(safeRow.rr);
+        $('#f_type').val(safeRow.type);
+        $('#f_value').val(safeRow.value);
+        $('#f_ttl').val(safeRow.ttl);
+        
+        if (safeRow.provider === 'cloudflare') {
+            $('#f_proxied').prop('checked', safeRow.status === 'Proxied');
+        }
+        
+        $('.modal-title').text('编辑解析记录');
+        editModal.show();
+    }
+
+    function delRecord(provider, id, domain) {
+        if (!confirm('确定要删除这条记录吗？')) return;
+        const formData = new FormData();
+        formData.append('provider', provider);
+        formData.append('record_id', id);
+        formData.append('domain', domain);
+        fetch('/api/delete', { method: 'POST', body: formData })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success') { refreshDataAndUI(); } 
+                else { alert('删除失败: ' + data.msg); }
+            });
+    }
+</script>
+</body>
+</html>

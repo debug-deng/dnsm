@@ -1,0 +1,6 @@
+Flask
+Flask-Cors
+cloudflare
+alibabacloud-domain20180129
+alibabacloud-alidns20150109
+tencentcloud-sdk-python
